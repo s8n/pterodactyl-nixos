@@ -1,5 +1,5 @@
 {
-  description = "Pterodactyl Panel packaged for Nix, with a NixOS module";
+  description = "Pterodactyl Panel and Wings packaged for Nix, with NixOS modules";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
@@ -27,6 +27,7 @@
     {
       overlays.default = final: _prev: {
         pterodactyl-panel = final.callPackage ./pkgs/pterodactyl-panel/package.nix { };
+        pterodactyl-wings = final.callPackage ./pkgs/pterodactyl-wings/package.nix { };
       };
 
       nixosModules = {
@@ -38,7 +39,20 @@
               pkgs.callPackage ./pkgs/pterodactyl-panel/package.nix { }
             );
           };
-        default = self.nixosModules.pterodactyl-panel;
+        pterodactyl-wings =
+          { lib, pkgs, ... }:
+          {
+            imports = [ ./nixos/wings.nix ];
+            services.pterodactyl-wings.package = lib.mkDefault (
+              pkgs.callPackage ./pkgs/pterodactyl-wings/package.nix { }
+            );
+          };
+        default = {
+          imports = [
+            self.nixosModules.pterodactyl-panel
+            self.nixosModules.pterodactyl-wings
+          ];
+        };
       };
 
       packages = forAllSystems (
@@ -48,6 +62,7 @@
         in
         {
           pterodactyl-panel = pkgs.callPackage ./pkgs/pterodactyl-panel/package.nix { };
+          pterodactyl-wings = pkgs.callPackage ./pkgs/pterodactyl-wings/package.nix { };
           default = self.packages.${system}.pterodactyl-panel;
 
           # A script that writes the test image to stdout: `$(nix build ... --print-out-paths) | docker load`

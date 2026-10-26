@@ -5,9 +5,10 @@
 #   scripts/docker-test logs       follow the journal inside the container
 #   scripts/docker-test shell      open a shell inside the container
 #   scripts/docker-test stop       stop and remove the container
-#   scripts/docker-test purge      also remove its volumes (database, panel state)
+#   scripts/docker-test purge      also remove its volumes (database, panel state, servers)
 #
-# The panel is published on http://localhost:${PORT:-8080}.
+# The panel is published on http://localhost:${PORT:-8080}, Wings on 8081
+# (API) and 2022 (SFTP), and game server allocations on 25565-25569.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,9 +29,14 @@ up)
   docker run -d --name "$name" --hostname pterodactyl \
     --privileged --cgroupns=private \
     --tmpfs /run --tmpfs /run/lock --tmpfs /tmp:exec \
+    `# Some resolvers drop glibc's parallel A/AAAA queries, failing image pulls.` \
+    --dns-option single-request-reopen \
     -v "$name-mysql:/var/lib/mysql" \
     -v "$name-panel:/var/lib/pterodactyl-panel" \
-    -p "$port:80" \
+    -v "$name-wings:/var/lib/pterodactyl" \
+    -v "$name-docker:/var/lib/docker" \
+    -p "$port:80" -p 8081:8081 -p 2022:2022 \
+    -p 25565-25569:25565-25569/tcp -p 25565-25569:25565-25569/udp \
     "$image" >/dev/null
   echo "Started $name. Waiting for the panel to come up..." >&2
   for _ in $(seq 120); do
@@ -48,10 +54,10 @@ shell) exec docker exec -it "$name" /run/current-system/sw/bin/bash -l ;;
 stop) docker rm -f "$name" ;;
 purge)
   docker rm -f "$name" 2>/dev/null || true
-  docker volume rm "$name-mysql" "$name-panel"
+  docker volume rm "$name-mysql" "$name-panel" "$name-wings" "$name-docker"
   ;;
 *)
-  sed -n '2,10p' "$0" >&2
+  sed -n '2,12p' "$0" >&2
   exit 1
   ;;
 esac

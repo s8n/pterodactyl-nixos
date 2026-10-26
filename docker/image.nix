@@ -19,10 +19,17 @@ dockerTools.streamLayeredImage {
     Env = [ "container=docker" ];
     # systemd shuts down cleanly on SIGRTMIN+3 rather than SIGTERM.
     StopSignal = "SIGRTMIN+3";
-    ExposedPorts."80/tcp" = { };
+    ExposedPorts = {
+      "80/tcp" = { };
+      "8081/tcp" = { };
+      "2022/tcp" = { };
+    };
     Volumes = {
       "/var/lib/mysql" = { };
       "/var/lib/pterodactyl-panel" = { };
+      "/var/lib/pterodactyl" = { };
+      # Docker's overlay2 storage can't sit on the container's own overlayfs.
+      "/var/lib/docker" = { };
     };
   };
 }

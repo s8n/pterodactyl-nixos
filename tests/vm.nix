@@ -1,16 +1,23 @@
-# End-to-end test in a QEMU VM: boots the module with its defaults and checks
-# that the panel serves its login page and that the admin can log in through
-# the API.
+# End-to-end test in a QEMU VM: boots the panel module with its defaults and
+# checks that the panel serves its login page and that the admin can log in
+# through the API. Wings runs on the same machine, registered as a node, and
+# the test checks that it and the panel accept each other's credentials.
 { self, pkgs }:
 
+let
+  wingsVersion = self.packages.${pkgs.stdenv.hostPlatform.system}.pterodactyl-wings.version;
+in
 pkgs.testers.runNixOSTest {
   name = "pterodactyl-panel";
 
   nodes.machine =
     { pkgs, ... }:
     {
-      imports = [ self.nixosModules.default ];
-      virtualisation.memorySize = 2048;
+      imports = [
+        self.nixosModules.default
+        ./local-node.nix
+      ];
+      virtualisation.memorySize = 3072;
       services.pterodactyl-panel = {
         enable = true;
         hostName = "localhost";
@@ -26,6 +33,14 @@ pkgs.testers.runNixOSTest {
           passwordFile = "/etc/pterodactyl-test/admin-password";
         };
       };
+      services.pterodactyl-wings = {
+        enable = true;
+        settings = {
+          uuid = "6f1c1f1e-8a46-4c32-9f4b-5d8d2c7e0a11";
+          token_id = "TESTTOKENID00001";
+        };
+        tokenFile = "/etc/pterodactyl-test/wings-token";
+      };
       # Secret options reject store paths, so the test secrets are files in
       # /etc. Their text is still copied from the store, which is fine here.
       environment.etc = {
@@ -36,6 +51,10 @@ pkgs.testers.runNixOSTest {
         };
         "pterodactyl-test/admin-password" = {
           text = "changeme123";
+          mode = "0400";
+        };
+        "pterodactyl-test/wings-token" = {
+          text = "wings-test-token-0123456789abcdef0123456789abcdef0123456789abcd";
           mode = "0400";
         };
       };
@@ -101,5 +120,32 @@ pkgs.testers.runNixOSTest {
         machine.succeed("rm /var/lib/pterodactyl-panel/.initial-admin-created")
         machine.succeed("systemctl restart pterodactyl-panel-setup.service")
         machine.succeed("test -e /var/lib/pterodactyl-panel/.initial-admin-created")
+
+    with subtest("wings starts and authenticates against the panel"):
+        # Wings exits at start unless the panel accepts its token.
+        machine.wait_for_unit("pterodactyl-wings.service")
+        machine.wait_for_open_port(8080)
+        machine.wait_for_open_port(2022)
+        machine.succeed("wings version | grep -q 'wings v${wingsVersion}'")
+        machine.succeed("docker network inspect pterodactyl_nw")
+        # The token stays a file reference, also after Wings writes the file back.
+        machine.succeed("stat -c %a /etc/pterodactyl/config.yml | grep -qx 600")
+        machine.succeed("grep -qx 'token: file:///etc/pterodactyl-test/wings-token' /etc/pterodactyl/config.yml")
+        machine.succeed("grep -qx 'remote: http://localhost' /etc/pterodactyl/config.yml")
+
+    with subtest("panel authenticates against wings"):
+        machine.fail("curl -sf http://localhost:8080/api/system")
+        out = machine.succeed(
+            "pterodactyl-artisan tinker --execute='echo json_encode(app(Pterodactyl\\Repositories\\Wings\\DaemonConfigurationRepository::class)->setNode(Pterodactyl\\Models\\Node::query()->firstOrFail())->getSystemInformation());'"
+        )
+        info = json.loads(out.strip().splitlines()[-1])
+        assert info["version"] == "${wingsVersion}", info
+
+    with subtest("registering the node again is a no-op"):
+        machine.succeed("systemctl restart pterodactyl-local-node.service pterodactyl-wings.service")
+        machine.wait_for_unit("pterodactyl-wings.service")
+        machine.succeed(
+            "pterodactyl-artisan tinker --execute='echo Pterodactyl\\Models\\Node::count();' | tail -n1 | grep -qx 1"
+        )
   '';
 }

@@ -1,11 +1,15 @@
 # pterodactyl-nixos
 
-A Nix package and a NixOS module for [Pterodactyl Panel](https://pterodactyl.io) 1.15.2, the web panel only (not Wings).
+Nix packages and NixOS modules for [Pterodactyl](https://pterodactyl.io): Panel 1.15.2 and Wings 1.13.4.
 
 - `pkgs/pterodactyl-panel/package.nix`: builds the panel from the upstream release tarball (frontend already compiled) with `buildComposerProject2` on PHP 8.3.
+- `pkgs/pterodactyl-wings/package.nix`: builds Wings from source with `buildGoModule`.
 - `nixos/module.nix`: `services.pterodactyl-panel`. Sets up PHP-FPM, nginx, the queue worker, the scheduler timer, database migrations, and by default a local MariaDB and Redis.
-- `docker/`: a NixOS system that boots with systemd inside a Docker container, for trying the module out.
+- `nixos/wings.nix`: `services.pterodactyl-wings`. Runs Wings and Docker.
+- `docker/`: a NixOS system that boots with systemd inside a Docker container, for trying the modules out.
 - `tests/vm.nix`: a NixOS VM test (`nix flake check`).
+
+`nixosModules.default` imports both modules; `nixosModules.pterodactyl-panel` and `nixosModules.pterodactyl-wings` import one each. Panel and Wings can run on the same machine or on different ones.
 
 ## Usage
 
@@ -63,6 +67,8 @@ A Nix package and a NixOS module for [Pterodactyl Panel](https://pterodactyl.io)
 
 Run artisan commands as the panel user with `pterodactyl-artisan`, for example `pterodactyl-artisan p:user:make` or `pterodactyl-artisan p:location:make`.
 
+## Panel
+
 ### Options
 
 | Option | Default | Notes |
@@ -98,9 +104,61 @@ Things to know:
 | `pterodactyl-panel-queue.service` | `artisan queue:work` (upstream calls this `pteroq`). |
 | `pterodactyl-panel-scheduler.timer` | `artisan schedule:run` every minute. |
 
+## Wings
+
+Create a location and a node in the panel first (Admin → Locations, Admin → Nodes), then copy the values from the node's Configuration tab:
+
+```nix
+{
+  services.pterodactyl-wings = {
+    enable = true;
+    settings = {
+      uuid = "0b5a6e5d-3c43-4b41-9a2f-0e8f3c3f7a10"; # `uuid` from the panel
+      token_id = "Rk2dL7xQe9pZ1sYb"; # `token_id`
+      remote = "https://panel.example.com"; # not needed when the panel runs on this machine
+    };
+    tokenFile = "/run/secrets/wings-token"; # contains `token`
+    openFirewall = true; # API (8080) and SFTP (2022)
+  };
+}
+```
+
+The panel's Configuration tab also lists API port, SFTP port, upload limit and SSL settings. The module's defaults match the panel's defaults (8080, 2022, no SSL). If you change one on either side, change it on the other too.
+
+For TLS, either enable `api.ssl` in `settings` with a certificate Wings can read (it runs as root, so `security.acme` certificates work), or put Wings behind a reverse proxy, set the node's "Behind Proxy" option in the panel and keep `api.ssl` off. Browsers connect to Wings directly for the console and file uploads, so a panel served over HTTPS needs Wings on HTTPS too.
+
+Game server ports (allocations) are published by Docker. Allocations are created in the panel.
+
+### Options
+
+| Option | Default | Notes |
+|---|---|---|
+| `enable` | `false` | Also enables `virtualisation.docker`. |
+| `tokenFile` | none | File containing the node's `token`. Same rules as the panel's secret paths. |
+| `openFirewall` | `false` | Opens `settings.api.port` and `settings.system.sftp.bind_port`. |
+| `settings` | see below | Wings' `config.yml`. Anything from upstream's `config/config.go`. |
+| `package` | the flake's package | |
+
+Defaults the module puts in `settings`: `remote` = the panel's `APP_URL` if `services.pterodactyl-panel` is enabled on the same machine, `api.port = 8080`, `system.sftp.bind_port = 2022`, `system.root_directory = /var/lib/pterodactyl`, `system.log_directory = /var/log/pterodactyl`, `system.timezone` = `time.timeZone` or UTC, `system.username = "pterodactyl-wings"` (a system user the module creates; server files belong to it), `system.enable_log_rotate = false` (the module configures `services.logrotate` instead), `ignore_panel_config_updates = true`, and `token = "file://<tokenFile>"`.
+
+Things to know:
+
+- `/etc/pterodactyl/config.yml` is regenerated whenever `pterodactyl-wings.service` starts. It holds a `file://` reference to `tokenFile`, not the token itself. Because the file is in the default location, `wings diagnostics` works without arguments.
+- `ignore_panel_config_updates` is on because the panel pushes node edits (ports, SSL, a reset token) straight into Wings' `config.yml`, and the module would overwrite them on the next restart. Make those changes in Nix and in the panel. If you reset the node's token in the panel, update `tokenFile` and restart Wings.
+- Wings exits if it can't reach the panel when it starts, and systemd restarts it every 5 seconds. When the panel is on the same machine, Wings starts after it.
+- Wings creates a Docker network, `pterodactyl_nw`, on `172.18.0.0/16`. If that range is already used on your network, set `docker.network.interface` and `docker.network.interfaces.v4.{subnet,gateway}` in `settings`.
+
+### Services
+
+| Unit | What it does |
+|---|---|
+| `pterodactyl-wings.service` | Writes `config.yml`, then runs Wings as root (it manages Docker and owns server files). Requires `docker.service`. |
+
 ## Trying it in Docker
 
 You don't need Nix on the host: `scripts/nix` runs Nix inside the `nixos/nix` image and keeps its store in the `pterodactyl-nix-store` Docker volume.
+
+The container runs the panel and Wings, with Wings already registered as a node called `local` with allocations on ports 25565-25569, so you can create a server and start it straight away. Wings runs its own Docker daemon inside the container.
 
 ```sh
 scripts/docker-test          # build the image, boot NixOS + systemd in a container
@@ -111,14 +169,15 @@ scripts/docker-test stop     # remove the container (data volumes are kept)
 scripts/docker-test purge    # remove the container and its volumes
 ```
 
-`PORT=9000 scripts/docker-test` publishes on a different port. Links the panel generates will still point at `APP_URL` (`http://localhost:8080`), which is set in `docker/configuration.nix`.
+`PORT=9000 scripts/docker-test` publishes the panel on a different port. Links the panel generates will still point at `APP_URL` (`http://localhost:8080`), which is set in `docker/configuration.nix`, and Wings only accepts browser connections from that origin. Wings itself is published on ports 8081 (API and console websocket) and 2022 (SFTP), and the allocations on 25565-25569 (TCP and UDP); those ports are fixed.
 
-The container runs `--privileged` because systemd needs it. The test image's admin password is stored world-readable in the Nix store, so use it for local testing only.
+The container runs `--privileged` because systemd and the inner Docker daemon need it. The test image's admin password is stored world-readable in the Nix store, so use it for local testing only.
 
 ## Development
 
 ```sh
 scripts/nix build .#pterodactyl-panel --print-out-paths
+scripts/nix build .#pterodactyl-wings --print-out-paths
 scripts/nix flake check      # evaluates everything and runs the VM test (fast with /dev/kvm)
 scripts/nix fmt
 ```
@@ -132,3 +191,7 @@ The flake reads files from git, so run `git add` on new files before building.
 1. Bump `version` in `pkgs/pterodactyl-panel/package.nix`.
 2. Set the `src` `hash` and `vendorHash` to `lib.fakeHash`, build, and copy in the hashes Nix reports (two builds).
 3. Run `scripts/nix flake check`.
+
+### Updating Wings
+
+Same as the panel, in `pkgs/pterodactyl-wings/package.nix`: bump `version`, set `src.hash` and `vendorHash` to `lib.fakeHash`, build twice to get the real hashes, then run `scripts/nix flake check`. Check the Wings release notes for which panel versions it supports.

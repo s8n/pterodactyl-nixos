@@ -127,7 +127,7 @@ The panel's Configuration tab also lists API port, SFTP port, upload limit and S
 
 For TLS, either enable `api.ssl` in `settings` with a certificate Wings can read (it runs as root, so `security.acme` certificates work), or put Wings behind a reverse proxy, set the node's "Behind Proxy" option in the panel and keep `api.ssl` off. Browsers connect to Wings directly for the console and file uploads, so a panel served over HTTPS needs Wings on HTTPS too.
 
-Game server ports (allocations) are published by Docker. Allocations are created in the panel.
+Game server ports are allocations: you create them in the panel, and Docker publishes them on the host.
 
 ### Options
 
@@ -145,7 +145,7 @@ Things to know:
 
 - `/etc/pterodactyl/config.yml` is regenerated whenever `pterodactyl-wings.service` starts. It holds a `file://` reference to `tokenFile`, not the token itself. Because the file is in the default location, `wings diagnostics` works without arguments.
 - `ignore_panel_config_updates` is on because the panel pushes node edits (ports, SSL, a reset token) straight into Wings' `config.yml`, and the module would overwrite them on the next restart. Make those changes in Nix and in the panel. If you reset the node's token in the panel, update `tokenFile` and restart Wings.
-- Wings exits if it can't reach the panel when it starts, and systemd restarts it every 5 seconds. When the panel is on the same machine, Wings starts after it.
+- Wings exits if it can't reach the panel when it starts. systemd restarts it after 5 seconds, and gives up after 30 failed starts within 3 minutes. When the panel is on the same machine, Wings starts after it.
 - Wings creates a Docker network, `pterodactyl_nw`, on `172.18.0.0/16`. If that range is already used on your network, set `docker.network.interface` and `docker.network.interfaces.v4.{subnet,gateway}` in `settings`.
 
 ### Services
@@ -158,7 +158,7 @@ Things to know:
 
 You don't need Nix on the host: `scripts/nix` runs Nix inside the `nixos/nix` image and keeps its store in the `pterodactyl-nix-store` Docker volume.
 
-The container runs the panel and Wings, with Wings already registered as a node called `local` with allocations on ports 25565-25569, so you can create a server and start it straight away. Wings runs its own Docker daemon inside the container.
+The container runs the panel and Wings. Wings is already registered as a node called `local`, with allocations on ports 25565-25569, so you can create a server and start it straight away. Wings runs its own Docker daemon inside the container.
 
 ```sh
 scripts/docker-test          # build the image, boot NixOS + systemd in a container
@@ -194,4 +194,4 @@ The flake reads files from git, so run `git add` on new files before building.
 
 ### Updating Wings
 
-Same as the panel, in `pkgs/pterodactyl-wings/package.nix`: bump `version`, set `src.hash` and `vendorHash` to `lib.fakeHash`, build twice to get the real hashes, then run `scripts/nix flake check`. Check the Wings release notes for which panel versions it supports.
+The steps are the same as for the panel, in `pkgs/pterodactyl-wings/package.nix`: bump `version`, set `src.hash` and `vendorHash` to `lib.fakeHash`, build twice to get the real hashes, then run `scripts/nix flake check`. Check the Wings release notes for which panel versions it supports.

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Run `nix` inside a Docker container, for hosts that don't have Nix installed.
+# The Nix store lives in a named Docker volume so builds are cached between runs.
+#
+#   scripts/nix build .#pterodactyl-panel --print-out-paths
+#   scripts/nix flake check
+#
+# Set NIX_DOCKER_SHELL=1 to get an interactive shell in the builder instead.
+set -euo pipefail
+
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+volume="${NIX_DOCKER_VOLUME:-pterodactyl-nix-store}"
+image="${NIX_DOCKER_IMAGE:-nixos/nix:latest}"
+
+args=(--rm -i -v "$volume:/nix" -v "$repo:/src" -w /src
+  -e "NIX_CONFIG=experimental-features = nix-command flakes
+sandbox = false
+max-jobs = auto
+system-features = nixos-test benchmark big-parallel kvm")
+[[ -t 0 && -t 1 ]] && args+=(-t)
+# KVM makes the NixOS VM test (`nix flake check`) fast; it's optional.
+[[ -e /dev/kvm ]] && args+=(--device /dev/kvm)
+
+# The repo is owned by the host user, not by root inside the container, and
+# Nix's libgit2 only honours safe.directory from a real config file.
+setup='printf "[safe]\n\tdirectory = *\n" > "$HOME/.gitconfig"'
+
+if [[ -n "${NIX_DOCKER_SHELL:-}" ]]; then
+  exec docker run "${args[@]}" "$image" sh -c "$setup; exec bash"
+fi
+exec docker run "${args[@]}" "$image" sh -c "$setup; exec nix \"\$@\"" nix "$@"

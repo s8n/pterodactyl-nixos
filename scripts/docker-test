@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Build the NixOS test image (using Nix inside Docker) and boot it.
+#
+#   scripts/docker-test            build, load and (re)start the container
+#   scripts/docker-test logs       follow the journal inside the container
+#   scripts/docker-test shell      open a shell inside the container
+#   scripts/docker-test stop       stop and remove the container
+#   scripts/docker-test purge      also remove its volumes (database, panel state)
+#
+# The panel is published on http://localhost:${PORT:-8080}.
+set -euo pipefail
+
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+name="${CONTAINER_NAME:-pterodactyl-nixos}"
+port="${PORT:-8080}"
+image="pterodactyl-nixos:latest"
+
+case "${1:-up}" in
+up)
+  echo "Building image..." >&2
+  # The image is a script that streams a tarball; run it inside the builder
+  # (where the store lives) and pipe the tarball to the host's Docker.
+  out="$("$repo/scripts/nix" build .#docker-image --no-link --print-out-paths)"
+  docker run --rm -v "${NIX_DOCKER_VOLUME:-pterodactyl-nix-store}:/nix" nixos/nix:latest "$out" 2> >(grep -v "^Creating layer" >&2) | docker load
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  # systemd needs a writable cgroup tree and tmpfs /run; --privileged is the
+  # simplest way to get everything it expects.
+  docker run -d --name "$name" --hostname pterodactyl \
+    --privileged --cgroupns=private \
+    --tmpfs /run --tmpfs /run/lock --tmpfs /tmp:exec \
+    -v "$name-mysql:/var/lib/mysql" \
+    -v "$name-panel:/var/lib/pterodactyl-panel" \
+    -p "$port:80" \
+    "$image" >/dev/null
+  echo "Started $name. Waiting for the panel to come up..." >&2
+  for _ in $(seq 120); do
+    if curl -sf -o /dev/null "http://localhost:$port/auth/login"; then
+      echo "Panel is up: http://localhost:$port (admin / changeme123)" >&2
+      exit 0
+    fi
+    sleep 1
+  done
+  echo "Panel did not come up in time; check: $0 logs" >&2
+  exit 1
+  ;;
+logs) exec docker exec -it "$name" /run/current-system/sw/bin/journalctl -f ;;
+shell) exec docker exec -it "$name" /run/current-system/sw/bin/bash -l ;;
+stop) docker rm -f "$name" ;;
+purge)
+  docker rm -f "$name" 2>/dev/null || true
+  docker volume rm "$name-mysql" "$name-panel"
+  ;;
+*)
+  sed -n '2,11p' "$0" >&2
+  exit 1
+  ;;
+esac

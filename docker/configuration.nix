@@ -1,6 +1,6 @@
 # NixOS configuration for the Docker test container. Boots systemd as PID 1
 # and runs the panel with a local MariaDB, Redis and nginx.
-{ lib, pkgs, ... }:
+{ lib, ... }:
 
 {
   boot.isContainer = true;
@@ -36,9 +36,14 @@
     initialAdmin = {
       email = "admin@example.com";
       username = "admin";
-      # Test container only: this ends up world-readable in the Nix store.
-      passwordFile = pkgs.writeText "pterodactyl-admin-password" "changeme123";
+      passwordFile = "/etc/pterodactyl-admin-password";
     };
+  };
+  # Test container only: secret options reject store paths, but the text of an
+  # /etc file still ends up world-readable in the Nix store.
+  environment.etc."pterodactyl-admin-password" = {
+    text = "changeme123";
+    mode = "0400";
   };
   services.nginx.virtualHosts.localhost.default = true;
 

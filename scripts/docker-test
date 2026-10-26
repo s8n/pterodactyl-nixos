@@ -51,7 +51,7 @@ purge)
   docker volume rm "$name-mysql" "$name-panel"
   ;;
 *)
-  sed -n '2,11p' "$0" >&2
+  sed -n '2,10p' "$0" >&2
   exit 1
   ;;
 esac

@@ -18,12 +18,25 @@ pkgs.testers.runNixOSTest {
           RECAPTCHA_ENABLED = false;
           # Exercises escaping in the generated .env.
           APP_NAME = ''Ptero "test" $HOME \ panel'';
-          MAIL_PASSWORD._secret = pkgs.writeText "mail-password" "s3cr3t$with\"quotes";
+          MAIL_PASSWORD._secret = "/etc/pterodactyl-test/mail-password";
         };
         initialAdmin = {
           email = "admin@example.com";
           username = "admin";
-          passwordFile = pkgs.writeText "admin-password" "changeme123";
+          passwordFile = "/etc/pterodactyl-test/admin-password";
+        };
+      };
+      # Secret options reject store paths, so the test secrets are files in
+      # /etc. Their text is still copied from the store, which is fine here.
+      environment.etc = {
+        "pterodactyl-test/mail-password" = {
+          text = "s3cr3t$with\"quotes";
+          mode = "0400";
+          user = "pterodactyl";
+        };
+        "pterodactyl-test/admin-password" = {
+          text = "changeme123";
+          mode = "0400";
         };
       };
       environment.systemPackages = [ pkgs.jq ];
@@ -71,8 +84,22 @@ pkgs.testers.runNixOSTest {
         machine.succeed("systemctl start pterodactyl-panel-scheduler.service")
         machine.succeed("pterodactyl-artisan queue:monitor redis:high")
 
-    with subtest("setup is idempotent"):
+    with subtest("setup is idempotent and keeps state"):
+        # Restarting setup must not flush the Redis cache (which shares its
+        # database with the queue and sessions) or re-seed edited stock eggs.
+        machine.succeed(
+            "pterodactyl-artisan tinker --execute='cache()->put(\"nixos-test\", \"kept\", 3600); Pterodactyl\\Models\\Egg::query()->orderBy(\"id\")->first()->update([\"startup\" => \"nixos-test\"]);'"
+        )
         machine.succeed("systemctl restart pterodactyl-panel-setup.service")
         machine.succeed("curl -sf http://localhost/auth/login")
+        out = machine.succeed(
+            "pterodactyl-artisan tinker --execute='echo json_encode([cache()->get(\"nixos-test\"), Pterodactyl\\Models\\Egg::query()->orderBy(\"id\")->first()->startup]);'"
+        )
+        assert json.loads(out.strip().splitlines()[-1]) == ["kept", "nixos-test"], out
+
+    with subtest("initial admin is not re-created after losing the marker"):
+        machine.succeed("rm /var/lib/pterodactyl-panel/.initial-admin-created")
+        machine.succeed("systemctl restart pterodactyl-panel-setup.service")
+        machine.succeed("test -e /var/lib/pterodactyl-panel/.initial-admin-created")
   '';
 }

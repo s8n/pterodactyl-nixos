@@ -69,11 +69,11 @@ Run artisan commands as the panel user with `pterodactyl-artisan`, for example `
 |---|---|---|
 | `enable` | `false` | |
 | `hostName` | none | nginx virtual host and default `APP_URL`. |
-| `settings` | see below | Written to `.env`. Any variable from upstream's `.env.example` / `config/*.php`. `{ _secret = path; }` reads a value from a file at service start. |
+| `settings` | see below | Written to `.env`. Any variable from upstream's `.env.example` / `config/*.php`. `{ _secret = "/path/to/file"; }` reads a value from a file at service start. Secret paths (here and in the `*File` options) must be absolute strings outside the Nix store, such as `"/run/secrets/..."`; path literals and store paths such as `pkgs.writeText` are rejected. |
 | `appKeyFile`, `hashidsSaltFile` | `null` | If null, they are generated on first start into `${dataDir}/secrets/`. **Back up `app-key`**: without it, node tokens, database host passwords and 2FA secrets can't be decrypted. |
 | `database.createLocally` | `true` | Local MariaDB over the Unix socket with socket auth, so no password is needed. Set to `false` and use `database.{host,port,name,user,passwordFile}` for an external database. |
 | `redis.createLocally` | `true` | Dedicated Redis on a Unix socket, used for cache, sessions and the queue. |
-| `initialAdmin` | `null` | Created once, on first start. |
+| `initialAdmin` | `null` | Created once, on first start, unless a user with that email or username already exists. The password is read from `passwordFile`. |
 | `enableNginx` | `true` | |
 | `phpfpm.settings` | `{}` | Merged over the pool defaults (`pm = dynamic`, 16 children). |
 | `queueWorker.extraArgs` | `[]` | Extra arguments for `artisan queue:work`. |
@@ -87,12 +87,13 @@ Things to know:
 - `APP_ENVIRONMENT_ONLY = true` (the default) turns off the settings pages in the admin area so that all configuration comes from Nix. Set it to `false` if you want to manage mail and similar settings from the UI.
 - Upstream enables reCAPTCHA with shared public keys by default. To use your own keys, set `RECAPTCHA_WEBSITE_KEY` and `RECAPTCHA_SECRET_KEY`. To turn it off, set `RECAPTCHA_ENABLED = false`.
 - Behind another reverse proxy, set `TRUSTED_PROXIES`.
+- As with upstream's update procedure, the stock nests and eggs are re-seeded whenever the panel version changes, which overwrites edits made to them in the UI. A version bump can arrive through a routine `nix flake update`. To customise a stock egg, export it and import it as a new egg, then edit the copy.
 
 ### Services
 
 | Unit | What it does |
 |---|---|
-| `pterodactyl-panel-setup.service` | Oneshot. Generates missing secrets, writes `.env`, clears caches, runs `migrate --seed --force`, creates the initial admin. Runs again when the package or settings change, so upgrades apply migrations automatically. |
+| `pterodactyl-panel-setup.service` | Oneshot. Generates missing secrets, writes `.env`, clears compiled config and views, runs `migrate --force`, seeds nests and eggs when the panel version changes, creates the initial admin. Runs again when the package or settings change, so upgrades apply migrations automatically. |
 | `phpfpm-pterodactyl-panel.service` | PHP-FPM pool. |
 | `pterodactyl-panel-queue.service` | `artisan queue:work` (upstream calls this `pteroq`). |
 | `pterodactyl-panel-scheduler.timer` | `artisan schedule:run` every minute. |
